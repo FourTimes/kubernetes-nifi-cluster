@@ -1,0 +1,150 @@
+---
+name: $(Date:yyyyMMdd)$(Hours)$(Minutes)$(Rev:.r)
+trigger:
+  branches:
+    include:
+      - main
+resources:
+- repo: self
+
+variables:
+  repositoryName: famlidevacr.azurecr.io
+  nifi-name: nifid
+  zk-name: zkd
+
+pool: 
+  name: fml-eastus2-dev-build-vm-1
+  demands:  
+  - Agent.ComputerName -equals fml-eastus2-dev-build-vm-1
+
+jobs:
+- job: zookeeper
+  displayName: zookeeper build,push and deployment
+  steps:
+    - task: Docker@2
+      displayName: Build Docker Image
+      inputs:
+        command: build
+        containerRegistry: famlidevacr
+        repository: $(zk-name)
+        Dockerfile: zookeeper/docker/Dockerfile
+        tags: $(Build.BuildNumber)
+        arguments: '--no-cache'
+
+    - script: |
+        docker run -d --name $(zk-name)  $(repositoryName)/$(zk-name):$(Build.BuildNumber)
+        CID=$(docker ps -q -f status=running -f name=$(zk-name))
+        if [ ! "${CID}" ]; then
+          echo "Container doesn't exist"
+          exit 1
+        else
+          echo "Container Running"
+        fi
+        unset CID
+      displayName: Verify Docker Image Running State
+
+    - script: |
+        docker rm $(docker ps -aq --filter name=$(zk-name))  -f
+      displayName: Delete Running State Container
+
+    - task: Docker@2
+      displayName: Push Docker Image to ACR
+      inputs:
+        command: push
+        containerRegistry: famlidevacr
+        repository: $(zk-name)
+        tags: $(Build.BuildNumber)
+
+    - script: |
+        Size=$(docker image inspect $(repositoryName)/$(zk-name):$(Build.BuildNumber) --format='{{.Size}}')
+        DockerSize=$((($Size/1024)/1024))
+        echo "$(repositoryName)/$(zk-name):$(Build.BuildNumber) image size: $DockerSize Mb"
+        unset Size
+        docker rmi $(repositoryName)/$(zk-name):$(Build.BuildNumber)
+      displayName: Remove Last Build Image
+
+    - script: |
+        tag=$(Build.BuildNumber)
+        imageNameandversion=$(zk-name):$tag
+        repositoryName=$(repositoryName)
+        sed -i 's/containerImageName/'"$repositoryName\/$imageNameandversion"'/g' zookeeper/manifests/zoo-keeper.yml
+      displayName: Preparing the k8s deployment file
+
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: zookeeper/manifests/zoo-keeper.yml
+        artifact: drop-zk
+      displayName: Publish Pipeline Artifact
+      
+    - task: KubernetesManifest@0
+      displayName: kubernetes-deploy
+      inputs:
+        kubernetesServiceConnection: Fml-EastUs2-Dev-AKS-Cluster # dev-aks-ado-service-account
+        namespace: nifi-dev
+        manifests: zookeeper/manifests/zoo-keeper.yml
+
+- job: nifi
+  displayName: nifi build,push and deployment
+  dependsOn: zookeeper 
+  steps:
+    - task: Docker@2
+      displayName: Build Docker Image
+      inputs:
+        command: build
+        containerRegistry: famlidevacr
+        repository: $(nifi-name)
+        Dockerfile: nifi/docker/Dockerfile
+        tags: $(Build.BuildNumber)
+        arguments: '--no-cache'
+
+    - script: |
+        docker run -d --name $(nifi-name)  $(repositoryName)/$(nifi-name):$(Build.BuildNumber)
+        CID=$(docker ps -q -f status=running -f name=$(nifi-name))
+        if [ ! "${CID}" ]; then
+          echo "Container doesn't exist"
+          exit 1
+        else
+          echo "Container Running"
+        fi
+        unset CID
+      displayName: Verify Docker Image Running State
+
+    - script: |
+        docker rm $(docker ps -aq --filter name=$(nifi-name))  -f
+      displayName: Delete Running State Container
+
+    - task: Docker@2
+      displayName: Push Docker Image to ACR
+      inputs:
+        command: push
+        containerRegistry: famlidevacr
+        repository: $(nifi-name)
+        tags: $(Build.BuildNumber)
+
+    - script: |
+        Size=$(docker image inspect $(repositoryName)/$(nifi-name):$(Build.BuildNumber) --format='{{.Size}}')
+        DockerSize=$((($Size/1024)/1024))
+        echo "$(repositoryName)/$(nifi-name):$(Build.BuildNumber) image size: $DockerSize Mb"
+        unset Size
+        docker rmi $(repositoryName)/$(nifi-name):$(Build.BuildNumber)
+      displayName: Remove Last Build Image
+
+    - script: |
+        tag=$(Build.BuildNumber)
+        imageNameandversion=$(nifi-name):$tag
+        repositoryName=$(repositoryName)
+        sed -i 's/containerImageName/'"$repositoryName\/$imageNameandversion"'/g' nifi/manifests/nifi.yml
+      displayName: Preparing the k8s deployment file
+
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: nifi/manifests/nifi.yml
+        artifact: drop-nifi
+      displayName: Publish Pipeline Artifact
+      
+    - task: KubernetesManifest@0
+      displayName: kubernetes-deploy
+      inputs:
+        kubernetesServiceConnection: Fml-EastUs2-Dev-AKS-Cluster #dev-aks-ado-service-account
+        namespace: nifi-dev
+        manifests: nifi/manifests/nifi.yml

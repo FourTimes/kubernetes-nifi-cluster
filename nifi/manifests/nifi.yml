@@ -1,0 +1,115 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nifi
+  labels:
+    name: nifi
+    app: nifi
+spec:
+  serviceName: nifi
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nifi
+  template:
+    metadata:
+      labels:
+        app: nifi
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app: nifi
+      restartPolicy: Always
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      containers:
+      - name: nifi
+        image: containerImageName
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: nifi
+        - containerPort: 8082
+          name: cluster
+        env:
+          - name: NIFI_WEB_HTTP_PORT
+            value: "8080"
+          - name: NIFI_CLUSTER_IS_NODE
+            value: "true"
+          - name: NIFI_CLUSTER_NODE_PROTOCOL_PORT
+            value: "8082"
+          - name: NIFI_CLUSTER_NODE_ADDRESS
+            value: "nifi"
+          - name: NIFI_ZK_CONNECT_STRING
+            value: "zk-cs:2181"
+          - name: NIFI_ELECTION_MAX_WAIT
+            value: "1 min"
+        livenessProbe:
+          exec:
+            command:
+              - pgrep
+              - java
+        readinessProbe:
+          tcpSocket:
+              port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+          limits:
+            cpu: "9"
+            memory: 22Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nifi
+spec:
+  clusterIP:
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+    name: nifi
+  selector:
+    app: nifi
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.org/client-max-body-size: 2000m
+  name: nifi-ingress
+spec:
+  rules:
+  - host: fraudml.dev.att.com
+    http:
+      paths:
+      - backend:
+          serviceName: nifi
+          servicePort: 8080
+        path: /
+  tls:
+  - hosts:
+    - fraudml.dev.att.com
+    secretName: fraudml-nifi-dev-ingress-tls
+status:
+  loadBalancer:
+    ingress:
