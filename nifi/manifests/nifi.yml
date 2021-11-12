@@ -99,7 +99,7 @@ metadata:
   name: nifi-ingress
 spec:
   rules:
-  - host: fraudml.dev.att.com
+  - host: fraudml.dev.dtt.com
     http:
       paths:
       - backend:
